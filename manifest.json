@@ -1,0 +1,9 @@
+{
+  "id": "subtitle-lab",
+  "name": "Subtitle Lab",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Markdown 字幕的同步学习视图：空行分句、字段着色、块内编辑与句间跳转。",
+  "author": "Hzero",
+  "isDesktopOnly": true
+}

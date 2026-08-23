@@ -11,8 +11,14 @@ export interface SubtitleBlock {
 
 export interface SubtitleDocument {
 	captions: SubtitleBlock[];
-	youtubeId: string | null;
+	video: VideoSource | null;
 }
+
+export type VideoSource =
+	| { kind: "youtube"; id: string }
+	| { kind: "bilibili"; idType: "bvid" | "aid" | "episodeId"; id: string; page: number }
+	| { kind: "direct"; url: string }
+	| { kind: "vault"; path: string };
 
 export interface FieldStyle {
 	id: string;

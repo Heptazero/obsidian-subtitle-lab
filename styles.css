@@ -45,6 +45,14 @@
 	font-size: 12px;
 }
 
+.subtitle-lab-source {
+	flex: none;
+	padding-left: 6px;
+	border-left: 1px solid var(--background-modifier-border);
+	color: var(--text-faint);
+	font-size: 11px;
+}
+
 .subtitle-lab-controls {
 	flex: none;
 }

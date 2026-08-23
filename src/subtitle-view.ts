@@ -1,7 +1,7 @@
 import { ItemView, MarkdownRenderer, Notice, TFile, WorkspaceLeaf, setIcon } from "obsidian";
-import { parseSubtitleDocument } from "./parser";
+import { parseSubtitleDocument, videoSourceKey } from "./parser";
 import type SubtitleLabPlugin from "./main";
-import type { FieldStyle, SubtitleBlock } from "./types";
+import type { FieldStyle, SubtitleBlock, VideoSource } from "./types";
 
 export const SUBTITLE_LAB_VIEW = "subtitle-lab-view";
 
@@ -10,9 +10,11 @@ export class SubtitleLabView extends ItemView {
 	private captions: SubtitleBlock[] = [];
 	private currentIndex = -1;
 	private editingIndex = -1;
-	private player: HTMLIFrameElement | null = null;
+	private iframePlayer: HTMLIFrameElement | null = null;
+	private mediaPlayer: HTMLMediaElement | null = null;
 	private playerReady = false;
 	private isPlaying = false;
+	private videoSource: VideoSource | null = null;
 	private captionsEl: HTMLElement | null = null;
 	private captionEls = new Map<number, HTMLElement>();
 	private playerPoll: number | null = null;
@@ -58,17 +60,15 @@ export class SubtitleLabView extends ItemView {
 
 	async loadFile(file: TFile, rebuildShell = false): Promise<void> {
 		if (file.extension !== "md") return;
-		const previousYoutubeId = this.youtubeId;
+		const previousVideoKey = videoSourceKey(this.videoSource);
 		this.file = file;
 		const parsed = parseSubtitleDocument(await this.app.vault.read(file));
 		this.captions = parsed.captions;
-		this.youtubeId = parsed.youtubeId;
+		this.videoSource = parsed.video;
 		if (this.currentIndex >= this.captions.length) this.currentIndex = this.captions.length - 1;
-		if (rebuildShell || previousYoutubeId !== this.youtubeId || !this.captionsEl) this.render();
+		if (rebuildShell || previousVideoKey !== videoSourceKey(this.videoSource) || !this.captionsEl) this.render();
 		else this.renderCaptions();
 	}
-
-	private youtubeId: string | null = null;
 
 	refresh(): void {
 		if (this.captionsEl) this.renderCaptions();
@@ -82,9 +82,20 @@ export class SubtitleLabView extends ItemView {
 	}
 
 	togglePlayback(): void {
-		this.isPlaying = !this.isPlaying;
-		this.sendPlayerCommand(this.isPlaying ? "playVideo" : "pauseVideo");
-		this.updatePlaybackButton();
+		if (this.videoSource?.kind === "bilibili") {
+			new Notice("哔哩哔哩外链播放器需使用视频内的播放按钮。");
+			return;
+		}
+		if (this.mediaPlayer) {
+			if (this.mediaPlayer.paused) void this.mediaPlayer.play();
+			else this.mediaPlayer.pause();
+			return;
+		}
+		if (this.videoSource?.kind === "youtube") {
+			this.isPlaying = !this.isPlaying;
+			this.sendYouTubeCommand(this.isPlaying ? "playVideo" : "pauseVideo");
+			this.updatePlaybackButton();
+		}
 	}
 
 	editCurrent(): void {
@@ -105,21 +116,25 @@ export class SubtitleLabView extends ItemView {
 		root.empty();
 		root.addClass("subtitle-lab");
 		this.captionsEl = null;
-		this.player = null;
+		this.iframePlayer = null;
+		this.mediaPlayer = null;
 		this.playerReady = false;
+		this.isPlaying = false;
 		this.captionEls.clear();
 
 		const toolbar = root.createDiv({ cls: "subtitle-lab-toolbar" });
 		const title = toolbar.createDiv({ cls: "subtitle-lab-title" });
 		title.createSpan({ text: this.file?.basename ?? "选择一个字幕 Markdown", cls: "subtitle-lab-file-name" });
 		title.createSpan({ text: this.captions.length ? `${this.captions.length} 句` : "", cls: "subtitle-lab-count" });
+		if (this.videoSource) title.createSpan({ text: this.videoSourceLabel(), cls: "subtitle-lab-source" });
 
 		const controls = toolbar.createDiv({ cls: "subtitle-lab-controls" });
 		this.createIconButton(controls, "refresh-cw", "重新读取字幕", () => this.file && void this.loadFile(this.file));
 		this.createIconButton(controls, "chevron-up", "上一句", () => this.goRelative(-1));
 		this.createIconButton(controls, "chevron-down", "下一句", () => this.goRelative(1));
-		const playButton = this.createIconButton(controls, "play", "播放或暂停", () => this.togglePlayback());
+		const playButton = this.createIconButton(controls, "play", this.playbackTooltip(), () => this.togglePlayback());
 		playButton.addClass("subtitle-lab-play-button");
+		playButton.disabled = !this.videoSource || this.videoSource.kind === "bilibili";
 		this.createIconButton(controls, "pencil", "编辑当前字幕块", () => this.editCurrent());
 
 		if (!this.file) {
@@ -127,8 +142,8 @@ export class SubtitleLabView extends ItemView {
 			return;
 		}
 
-		if (this.youtubeId) this.renderPlayer(root, this.youtubeId);
-		else root.createDiv({ text: "没有识别到 YouTube 链接。字幕仍可浏览和编辑。", cls: "subtitle-lab-video-hint" });
+		if (this.videoSource) this.renderPlayer(root, this.videoSource);
+		else root.createDiv({ text: "没有识别到支持的视频链接。字幕仍可浏览和编辑。", cls: "subtitle-lab-video-hint" });
 
 		// Compatibility class lets reading-mode integrations (for example Lexis)
 		// recognize selections in this custom view as Markdown preview content.
@@ -162,9 +177,33 @@ export class SubtitleLabView extends ItemView {
 		});
 	}
 
-	private renderPlayer(root: HTMLElement, youtubeId: string): void {
+	private renderPlayer(root: HTMLElement, source: VideoSource): void {
 		const playerWrap = root.createDiv({ cls: "subtitle-lab-player-wrap" });
-		this.player = playerWrap.createEl("iframe", {
+		if (source.kind === "youtube") {
+			this.renderYouTubePlayer(playerWrap, source.id);
+			return;
+		}
+		if (source.kind === "bilibili") {
+			this.renderBilibiliPlayer(playerWrap, source, 0, false);
+			return;
+		}
+
+		if (source.kind === "direct") {
+			this.renderHtmlMediaPlayer(playerWrap, source.url);
+			return;
+		}
+
+		const mediaUrl = this.resolveVaultMediaUrl(source.path);
+		if (!mediaUrl) {
+			playerWrap.remove();
+			root.createDiv({ text: `找不到 vault 媒体文件：${source.path}`, cls: "subtitle-lab-video-hint" });
+			return;
+		}
+		this.renderHtmlMediaPlayer(playerWrap, mediaUrl);
+	}
+
+	private renderYouTubePlayer(playerWrap: HTMLElement, youtubeId: string): void {
+		this.iframePlayer = playerWrap.createEl("iframe", {
 			cls: "subtitle-lab-player",
 			attr: {
 				id: "subtitle-lab-youtube-player",
@@ -175,11 +214,76 @@ export class SubtitleLabView extends ItemView {
 			},
 		});
 		this.playerReady = false;
-		this.player.addEventListener("load", () => {
+		this.iframePlayer.addEventListener("load", () => {
 			this.playerReady = true;
-			this.initializePlayerCommunication();
-			window.setTimeout(() => this.initializePlayerCommunication(), 250);
+			this.initializeYouTubeCommunication();
+			window.setTimeout(() => this.initializeYouTubeCommunication(), 250);
 		});
+	}
+
+	private renderBilibiliPlayer(
+		playerWrap: HTMLElement,
+		source: Extract<VideoSource, { kind: "bilibili" }>,
+		startSeconds: number,
+		autoplay: boolean
+	): void {
+		this.iframePlayer?.remove();
+		const params = new URLSearchParams({
+			[source.idType]: source.id,
+			p: String(source.page),
+			t: String(Math.max(0, Math.floor(startSeconds))),
+			autoplay: autoplay ? "1" : "0",
+			danmaku: "0",
+		});
+		this.iframePlayer = playerWrap.createEl("iframe", {
+			cls: "subtitle-lab-player",
+			attr: {
+				src: `https://player.bilibili.com/player.html?${params.toString()}`,
+				title: "哔哩哔哩视频",
+				allow: "autoplay; encrypted-media; picture-in-picture",
+				allowfullscreen: "true",
+				scrolling: "no",
+			},
+		});
+		this.playerReady = false;
+	}
+
+	private renderHtmlMediaPlayer(playerWrap: HTMLElement, mediaUrl: string): void {
+		const media = playerWrap.createEl("video", {
+			cls: "subtitle-lab-player",
+			attr: { src: mediaUrl, controls: "true", preload: "metadata", playsinline: "true" },
+		});
+		this.mediaPlayer = media;
+		this.playerReady = media.readyState >= HTMLMediaElement.HAVE_METADATA;
+		media.addEventListener("loadedmetadata", () => {
+			this.playerReady = true;
+		});
+		media.addEventListener("timeupdate", () => this.followTime(media.currentTime));
+		media.addEventListener("seeked", () => this.followTime(media.currentTime));
+		media.addEventListener("play", () => {
+			this.isPlaying = true;
+			this.updatePlaybackButton();
+		});
+		media.addEventListener("pause", () => {
+			this.isPlaying = false;
+			this.updatePlaybackButton();
+		});
+	}
+
+	private resolveVaultMediaUrl(path: string): string | null {
+		const mediaFile = this.app.metadataCache.getFirstLinkpathDest(path, this.file?.path ?? "");
+		return mediaFile ? this.app.vault.getResourcePath(mediaFile) : null;
+	}
+
+	private playbackTooltip(): string {
+		return this.videoSource?.kind === "bilibili" ? "请使用哔哩哔哩播放器控件" : "播放或暂停";
+	}
+
+	private videoSourceLabel(): string {
+		if (this.videoSource?.kind === "youtube") return "YouTube";
+		if (this.videoSource?.kind === "bilibili") return "哔哩哔哩·时间戳定位";
+		if (this.videoSource?.kind === "vault") return "本地视频·完整同步";
+		return "直链视频·完整同步";
 	}
 
 	private renderCaption(parent: HTMLElement, caption: SubtitleBlock, index: number): void {
@@ -270,10 +374,24 @@ export class SubtitleLabView extends ItemView {
 		if (!this.captions[index]) return;
 		this.currentIndex = index;
 		if (seek) {
-			this.sendPlayerCommand("seekTo", [this.captions[index].startSeconds, true]);
-			window.setTimeout(() => this.requestPlayerTime(), 200);
+			this.seekTo(this.captions[index].startSeconds);
 		}
 		this.updateActiveCaption(true);
+	}
+
+	private seekTo(seconds: number): void {
+		if (this.mediaPlayer) {
+			this.mediaPlayer.currentTime = seconds;
+			return;
+		}
+		if (this.videoSource?.kind === "youtube") {
+			this.sendYouTubeCommand("seekTo", [seconds, true]);
+			window.setTimeout(() => this.requestPlayerTime(), 200);
+			return;
+		}
+		if (this.videoSource?.kind === "bilibili" && this.iframePlayer?.parentElement) {
+			this.renderBilibiliPlayer(this.iframePlayer.parentElement, this.videoSource, seconds, true);
+		}
 	}
 
 	private updateActiveCaption(shouldScroll: boolean): void {
@@ -289,26 +407,31 @@ export class SubtitleLabView extends ItemView {
 	}
 
 	private requestPlayerTime(): void {
-		if (this.playerReady) this.sendPlayerCommand("getCurrentTime");
+		if (this.mediaPlayer) {
+			this.followTime(this.mediaPlayer.currentTime);
+			return;
+		}
+		if (this.playerReady && this.videoSource?.kind === "youtube") this.sendYouTubeCommand("getCurrentTime");
 	}
 
-	private initializePlayerCommunication(): void {
-		if (!this.player?.contentWindow) return;
-		this.player.contentWindow.postMessage(
+	private initializeYouTubeCommunication(): void {
+		if (!this.iframePlayer?.contentWindow) return;
+		this.iframePlayer.contentWindow.postMessage(
 			JSON.stringify({ event: "listening", id: "subtitle-lab-youtube-player", channel: "widget" }),
 			"*"
 		);
-		this.sendPlayerCommand("addEventListener", ["onStateChange"]);
+		this.sendYouTubeCommand("addEventListener", ["onStateChange"]);
 		this.requestPlayerTime();
 	}
 
-	private sendPlayerCommand(func: string, args: unknown[] = []): void {
-		this.player?.contentWindow?.postMessage(JSON.stringify({ event: "command", func, args }), "*");
+	private sendYouTubeCommand(func: string, args: unknown[] = []): void {
+		this.iframePlayer?.contentWindow?.postMessage(JSON.stringify({ event: "command", func, args }), "*");
 	}
 
 	private handlePlayerMessage(event: MessageEvent): void {
+		if (this.videoSource?.kind !== "youtube") return;
 		if (!event.origin.includes("youtube")) return;
-		if (this.player && event.source !== this.player.contentWindow) return;
+		if (this.iframePlayer && event.source !== this.iframePlayer.contentWindow) return;
 		let data: unknown = event.data;
 		if (typeof data === "string") {
 			try {
@@ -353,7 +476,8 @@ export class SubtitleLabView extends ItemView {
 		if (!button) return;
 		button.empty();
 		setIcon(button, this.isPlaying ? "pause" : "play");
-		button.setAttribute("aria-label", this.isPlaying ? "暂停" : "播放");
-		button.setAttribute("title", this.isPlaying ? "暂停" : "播放");
+		const tooltip = this.videoSource?.kind === "bilibili" ? "请使用哔哩哔哩播放器控件" : this.isPlaying ? "暂停" : "播放";
+		button.setAttribute("aria-label", tooltip);
+		button.setAttribute("title", tooltip);
 	}
 }

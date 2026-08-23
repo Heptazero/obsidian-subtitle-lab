@@ -27,7 +27,7 @@ export class SubtitleLabSettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName("字幕分块").setHeading();
 		new Setting(containerEl)
 			.setName("自动居中当前字幕")
-			.setDesc("视频推进到新字幕时，将对应字幕块滚动到视图中央。")
+			.setDesc("YouTube、本地视频或直链视频推进时，将对应字幕块滚动到视图中央。")
 			.addToggle((toggle) =>
 				toggle.setValue(this.plugin.settings.autoScroll).onChange(async (value) => {
 					this.plugin.settings.autoScroll = value;

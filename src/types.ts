@@ -1,3 +1,5 @@
+import type { ToolbarAction } from "./toolbar";
+
 export interface SubtitleBlock {
 	id: string;
 	videoIndex: number | null;
@@ -46,5 +48,6 @@ export interface FieldStyle {
 
 export interface SubtitleLabSettings {
 	fields: FieldStyle[];
-	autoScroll: boolean;
+	followPlayback: boolean;
+	toolbarOrder: ToolbarAction[];
 }

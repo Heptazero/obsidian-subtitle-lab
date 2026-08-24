@@ -1,6 +1,7 @@
 import { ItemView, MarkdownRenderer, Notice, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import { parseSubtitleDocument, videoSourceKey } from "./parser";
 import type SubtitleLabPlugin from "./main";
+import { attachToolbarReorder, type ToolbarAction } from "./toolbar";
 import type { FieldStyle, SubtitleBlock, SubtitleHeading, SubtitleVideo, VideoSource } from "./types";
 
 export const SUBTITLE_LAB_VIEW = "subtitle-lab-view";
@@ -22,14 +23,19 @@ export class SubtitleLabView extends ItemView {
 	private mediaPlayer: HTMLMediaElement | null = null;
 	private playerReady = false;
 	private isPlaying = false;
+	private followPlayback = true;
+	private pendingLocateCurrentCaption = false;
 	private playerHostEl: HTMLElement | null = null;
-	private videoSelectEl: HTMLSelectElement | null = null;
 	private sourceLabelEl: HTMLElement | null = null;
+	private outlineButtonEl: HTMLButtonElement | null = null;
+	private outlinePanelEl: HTMLElement | null = null;
+	private outlinePanelOpen = false;
 	private captionsEl: HTMLElement | null = null;
 	private captionEls = new Map<number, HTMLElement>();
 	private videoGroupEls = new Map<number, HTMLDetailsElement>();
 	private outlineOpenState = new Map<string, boolean>();
 	private playerPoll: number | null = null;
+	private toolbarReorderCleanup: (() => void) | null = null;
 
 	constructor(leaf: WorkspaceLeaf, private plugin: SubtitleLabPlugin) {
 		super(leaf);
@@ -48,6 +54,7 @@ export class SubtitleLabView extends ItemView {
 	}
 
 	async onOpen(): Promise<void> {
+		this.followPlayback = this.plugin.settings.followPlayback;
 		this.registerDomEvent(window, "message", (event) => this.handlePlayerMessage(event));
 		this.registerEvent(
 			this.app.vault.on("modify", (file) => {
@@ -60,6 +67,7 @@ export class SubtitleLabView extends ItemView {
 
 	async onClose(): Promise<void> {
 		if (this.playerPoll !== null) window.clearInterval(this.playerPoll);
+		this.toolbarReorderCleanup?.();
 	}
 
 	async showForFile(file: TFile): Promise<void> {
@@ -67,7 +75,10 @@ export class SubtitleLabView extends ItemView {
 		this.file = file;
 		this.currentIndex = -1;
 		this.editingIndex = -1;
-		if (isNewFile) this.activeVideoIndex = -1;
+		if (isNewFile) {
+			this.activeVideoIndex = -1;
+			this.outlinePanelOpen = false;
+		}
 		await this.loadFile(file, isNewFile);
 	}
 
@@ -106,6 +117,8 @@ export class SubtitleLabView extends ItemView {
 	}
 
 	refresh(): void {
+		this.followPlayback = this.plugin.settings.followPlayback;
+		this.updateFollowButton();
 		if (this.captionsEl) this.renderCaptions();
 		else this.render();
 	}
@@ -139,6 +152,52 @@ export class SubtitleLabView extends ItemView {
 		}
 	}
 
+	setFollowPlayback(enabled: boolean): void {
+		if (enabled && this.activeVideo()?.source.kind === "bilibili") {
+			new Notice("哔哩哔哩外链播放器无法读取当前播放时间。自动跟随不可用。");
+			return;
+		}
+		this.followPlayback = enabled;
+		this.plugin.settings.followPlayback = enabled;
+		void this.plugin.saveSettings();
+		this.updateFollowButton();
+		if (enabled) this.locateCurrentCaption();
+	}
+
+	toggleFollowPlayback(): void {
+		this.setFollowPlayback(!this.followPlayback);
+	}
+
+	locateCurrentCaption(): void {
+		if (this.mediaPlayer) {
+			this.followTime(this.mediaPlayer.currentTime, true);
+			return;
+		}
+		const source = this.activeVideo()?.source;
+		if (source?.kind === "youtube") {
+			if (!this.playerReady) {
+				new Notice("播放器尚未就绪。");
+				return;
+			}
+			this.pendingLocateCurrentCaption = true;
+			this.requestPlayerTime();
+			return;
+		}
+		if (source?.kind === "bilibili") {
+			new Notice("哔哩哔哩外链播放器无法读取当前播放时间。");
+			return;
+		}
+		new Notice("当前笔记没有可读取播放时间的视频。");
+	}
+
+	toggleOutlineNavigator(): void {
+		if (!this.outlinePanelEl) return;
+		this.outlinePanelOpen = !this.outlinePanelOpen;
+		this.outlinePanelEl.hidden = !this.outlinePanelOpen;
+		if (this.outlinePanelOpen) this.renderOutlineNavigator();
+		this.updateOutlineButton();
+	}
+
 	editCurrent(): void {
 		if (this.currentIndex < 0) this.currentIndex = this.captionIndicesForVideo(this.activeVideoIndex)[0] ?? -1;
 		if (this.currentIndex >= 0) this.startEditing(this.currentIndex);
@@ -158,9 +217,12 @@ export class SubtitleLabView extends ItemView {
 		const root = this.contentEl;
 		root.empty();
 		root.addClass("subtitle-lab");
+		this.toolbarReorderCleanup?.();
+		this.toolbarReorderCleanup = null;
 		this.playerHostEl = null;
-		this.videoSelectEl = null;
 		this.sourceLabelEl = null;
+		this.outlineButtonEl = null;
+		this.outlinePanelEl = null;
 		this.captionsEl = null;
 		this.iframePlayer = null;
 		this.mediaPlayer = null;
@@ -176,20 +238,20 @@ export class SubtitleLabView extends ItemView {
 		this.sourceLabelEl = title.createSpan({ text: this.videoSourceLabel(), cls: "subtitle-lab-source" });
 
 		const controls = toolbar.createDiv({ cls: "subtitle-lab-controls" });
-		if (this.videos.length > 1) this.renderVideoSelect(controls);
-		this.createIconButton(controls, "refresh-cw", "重新读取字幕", () => this.file && void this.loadFile(this.file));
-		this.createIconButton(controls, "chevron-up", "上一句", () => this.goRelative(-1));
-		this.createIconButton(controls, "chevron-down", "下一句", () => this.goRelative(1));
-		const playButton = this.createIconButton(controls, "play", this.playbackTooltip(), () => this.togglePlayback());
-		playButton.addClass("subtitle-lab-play-button");
-		const source = this.activeVideo()?.source;
-		playButton.disabled = !source || source.kind === "bilibili";
-		this.createIconButton(controls, "pencil", "编辑当前字幕块", () => this.editCurrent());
+		this.plugin.settings.toolbarOrder.forEach((action) => this.renderToolbarAction(controls, action));
+		this.toolbarReorderCleanup = attachToolbarReorder(controls, (order) => {
+			this.plugin.settings.toolbarOrder = order;
+			void this.plugin.saveSettings();
+		});
 
 		if (!this.file) {
 			root.createDiv({ text: "打开一篇含时间戳的 Markdown 后，再执行“打开字幕学习视图”。", cls: "subtitle-lab-empty" });
 			return;
 		}
+
+		this.outlinePanelEl = root.createDiv({ cls: "subtitle-lab-outline-navigator" });
+		this.outlinePanelEl.hidden = !this.outlinePanelOpen;
+		if (this.outlinePanelOpen) this.renderOutlineNavigator();
 
 		this.playerHostEl = root.createDiv({ cls: "subtitle-lab-player-host" });
 		this.renderActivePlayer();
@@ -235,23 +297,35 @@ export class SubtitleLabView extends ItemView {
 		});
 	}
 
-	private renderVideoSelect(parent: HTMLElement): void {
-		this.videoSelectEl = parent.createEl("select", { cls: "dropdown subtitle-lab-video-select" });
-		this.videoSelectEl.setAttribute("aria-label", "选择视频");
-		this.videos.forEach((video, index) => {
-			this.videoSelectEl!.createEl("option", { text: `${index + 1}. ${video.title}`, value: String(index) });
-		});
-		this.videoSelectEl.value = String(this.activeVideoIndex);
-		this.videoSelectEl.addEventListener("change", () => {
-			const index = Number(this.videoSelectEl?.value);
-			if (!Number.isInteger(index)) return;
-			this.switchVideo(index);
-			const group = this.videoGroupEls.get(index);
-			if (group) {
-				group.open = true;
-				group.scrollIntoView({ behavior: "smooth", block: "nearest" });
-			}
-		});
+	private renderToolbarAction(parent: HTMLElement, action: ToolbarAction): void {
+		let button: HTMLButtonElement;
+		if (action === "outline") {
+			button = this.createIconButton(parent, "list-tree", "打开字幕大纲", () => this.toggleOutlineNavigator());
+			button.addClass("subtitle-lab-outline-button");
+			button.disabled = this.captions.length === 0;
+			this.outlineButtonEl = button;
+		} else if (action === "follow") {
+			button = this.createIconButton(parent, "captions", "切换字幕跟随视频", () => this.toggleFollowPlayback());
+			button.addClass("subtitle-lab-follow-button");
+		} else if (action === "locate") {
+			button = this.createIconButton(parent, "locate-fixed", "定位到视频当前字幕", () => this.locateCurrentCaption());
+			button.addClass("subtitle-lab-locate-button");
+		} else if (action === "previous") {
+			button = this.createIconButton(parent, "chevron-up", "上一句", () => this.goRelative(-1));
+		} else if (action === "next") {
+			button = this.createIconButton(parent, "chevron-down", "下一句", () => this.goRelative(1));
+		} else if (action === "playback") {
+			button = this.createIconButton(parent, "play", this.playbackTooltip(), () => this.togglePlayback());
+			button.addClass("subtitle-lab-play-button");
+		} else if (action === "edit") {
+			button = this.createIconButton(parent, "pencil", "编辑当前字幕块", () => this.editCurrent());
+		} else {
+			button = this.createIconButton(parent, "refresh-cw", "重新读取字幕", () => this.file && void this.loadFile(this.file));
+		}
+		button.addClass("subtitle-lab-toolbar-action");
+		button.dataset.action = action;
+		if (action === "follow") this.updateFollowButton();
+		if (action === "outline") this.updateOutlineButton();
 	}
 
 	private renderCaptionGroups(parent: HTMLElement): void {
@@ -262,6 +336,76 @@ export class SubtitleLabView extends ItemView {
 
 		const unassigned = this.captionIndicesForVideo(null);
 		if (unassigned.length > 0) this.renderCaptionGroup(parent, -1, "未关联视频", unassigned);
+	}
+
+	private renderOutlineNavigator(): void {
+		const panel = this.outlinePanelEl;
+		if (!panel) return;
+		panel.empty();
+		this.videos.forEach((video, videoIndex) => {
+			const indices = this.captionIndicesForVideo(videoIndex);
+			this.renderOutlineNavigatorGroup(panel, videoIndex, video.title, indices);
+		});
+		const unassigned = this.captionIndicesForVideo(null);
+		if (unassigned.length > 0) this.renderOutlineNavigatorGroup(panel, -1, "未关联视频", unassigned);
+	}
+
+	private renderOutlineNavigatorGroup(
+		parent: HTMLElement,
+		videoIndex: number,
+		title: string,
+		indices: number[]
+	): void {
+		const group = parent.createDiv({ cls: "subtitle-lab-outline-nav-group" });
+		const videoButton = group.createEl("button", { text: title, cls: "subtitle-lab-outline-nav-video" });
+		videoButton.toggleClass("is-current", videoIndex === this.activeVideoIndex);
+		videoButton.addEventListener("click", () => {
+			const firstCaption = indices[0];
+			if (firstCaption !== undefined) this.navigateFromOutline(firstCaption);
+			else if (videoIndex >= 0) {
+				this.switchVideo(videoIndex);
+				this.closeOutlineNavigator();
+			}
+		});
+
+		const root = this.buildCaptionOutline(indices);
+		const visibleRoot = root.captionIndices.length === 0 && root.children.length === 1 ? root.children[0] : root;
+		visibleRoot.children.forEach((node) => this.renderOutlineNavigatorNode(group, node, 0));
+	}
+
+	private renderOutlineNavigatorNode(parent: HTMLElement, node: CaptionOutlineNode, depth: number): void {
+		const heading = node.heading;
+		if (!heading) return;
+		const firstCaption = this.firstOutlineCaptionIndex(node);
+		if (firstCaption === null) return;
+		const button = parent.createEl("button", { text: heading.title, cls: "subtitle-lab-outline-nav-item" });
+		button.style.paddingLeft = `${22 + depth * 16}px`;
+		button.toggleClass(
+			"is-current",
+			this.captions[this.currentIndex]?.outline.some((item) => item.id === heading.id) ?? false
+		);
+		button.addEventListener("click", () => this.navigateFromOutline(firstCaption));
+		node.children.forEach((child) => this.renderOutlineNavigatorNode(parent, child, depth + 1));
+	}
+
+	private firstOutlineCaptionIndex(node: CaptionOutlineNode): number | null {
+		if (node.captionIndices.length > 0) return node.captionIndices[0];
+		for (const child of node.children) {
+			const index = this.firstOutlineCaptionIndex(child);
+			if (index !== null) return index;
+		}
+		return null;
+	}
+
+	private navigateFromOutline(captionIndex: number): void {
+		this.closeOutlineNavigator();
+		this.goTo(captionIndex, true);
+	}
+
+	private closeOutlineNavigator(): void {
+		this.outlinePanelOpen = false;
+		if (this.outlinePanelEl) this.outlinePanelEl.hidden = true;
+		this.updateOutlineButton();
 	}
 
 	private renderCaptionGroup(parent: HTMLElement, videoIndex: number, title: string, indices: number[]): void {
@@ -353,6 +497,7 @@ export class SubtitleLabView extends ItemView {
 		if (!this.videos[videoIndex]) return;
 		const changed = videoIndex !== this.activeVideoIndex;
 		this.activeVideoIndex = videoIndex;
+		this.pendingLocateCurrentCaption = false;
 		if (changed) {
 			this.currentIndex = -1;
 			this.updateActiveCaption(false);
@@ -372,6 +517,7 @@ export class SubtitleLabView extends ItemView {
 		this.mediaPlayer = null;
 		this.playerReady = false;
 		this.isPlaying = false;
+		this.pendingLocateCurrentCaption = false;
 
 		const video = this.activeVideo();
 		if (video) this.renderPlayer(host, video.source, startSeconds, autoplay);
@@ -380,13 +526,49 @@ export class SubtitleLabView extends ItemView {
 	}
 
 	private updateVideoControls(): void {
-		if (this.videoSelectEl) this.videoSelectEl.value = String(this.activeVideoIndex);
 		if (this.sourceLabelEl) this.sourceLabelEl.setText(this.videoSourceLabel());
 		for (const [videoIndex, group] of this.videoGroupEls) group.toggleClass("is-active", videoIndex === this.activeVideoIndex);
 		const playButton = this.contentEl.querySelector<HTMLButtonElement>(".subtitle-lab-play-button");
-		const source = this.activeVideo()?.source;
-		if (playButton) playButton.disabled = !source || source.kind === "bilibili";
+		const followSupported = this.supportsLiveFollow();
+		const followButton = this.contentEl.querySelector<HTMLButtonElement>(".subtitle-lab-follow-button");
+		const locateButton = this.contentEl.querySelector<HTMLButtonElement>(".subtitle-lab-locate-button");
+		playButton?.toggleClass("is-unavailable", !this.activeVideo() || this.activeVideo()?.source.kind === "bilibili");
+		followButton?.toggleClass("is-unavailable", !followSupported);
+		locateButton?.toggleClass("is-unavailable", !followSupported);
 		this.updatePlaybackButton();
+		this.updateFollowButton();
+		if (this.outlinePanelOpen) this.renderOutlineNavigator();
+	}
+
+	private supportsLiveFollow(): boolean {
+		const source = this.activeVideo()?.source;
+		return !!source && source.kind !== "bilibili";
+	}
+
+	private updateFollowButton(): void {
+		const button = this.contentEl.querySelector<HTMLButtonElement>(".subtitle-lab-follow-button");
+		if (!button) return;
+		const supported = this.supportsLiveFollow();
+		button.toggleClass("is-unavailable", !supported);
+		button.toggleClass("is-active", supported && this.followPlayback);
+		button.setAttribute("aria-pressed", String(supported && this.followPlayback));
+		const tooltip = !supported
+			? "当前视频不支持字幕自动跟随"
+			: this.followPlayback
+				? "关闭字幕跟随视频"
+				: "开启字幕跟随视频";
+		button.setAttribute("aria-label", tooltip);
+		button.setAttribute("title", tooltip);
+	}
+
+	private updateOutlineButton(): void {
+		const button = this.outlineButtonEl;
+		if (!button) return;
+		button.toggleClass("is-active", this.outlinePanelOpen);
+		button.setAttribute("aria-expanded", String(this.outlinePanelOpen));
+		const tooltip = this.outlinePanelOpen ? "关闭字幕大纲" : "打开字幕大纲";
+		button.setAttribute("aria-label", tooltip);
+		button.setAttribute("title", tooltip);
 	}
 
 	private renderPlayer(root: HTMLElement, source: VideoSource, startSeconds = 0, autoplay = false): void {
@@ -636,9 +818,10 @@ export class SubtitleLabView extends ItemView {
 				section = section.parentElement?.closest<HTMLDetailsElement>("details");
 			}
 		}
-		if (active && shouldScroll && this.plugin.settings.autoScroll) {
+		if (active && shouldScroll) {
 			active.scrollIntoView({ behavior: "smooth", block: "center" });
 		}
+		if (this.outlinePanelOpen) this.renderOutlineNavigator();
 	}
 
 	private findCaptionByTime(time: number): number {
@@ -689,7 +872,11 @@ export class SubtitleLabView extends ItemView {
 		};
 		const currentTime =
 			(typeof payload.info === "object" ? payload.info.currentTime : undefined) ?? payload.infoDelivery?.currentTime;
-		if (typeof currentTime === "number") this.followTime(currentTime);
+		if (typeof currentTime === "number") {
+			const force = this.pendingLocateCurrentCaption;
+			this.pendingLocateCurrentCaption = false;
+			this.followTime(currentTime, force);
+		}
 		if (payload.event === "onStateChange") {
 			this.isPlaying = payload.info === 1;
 			this.updatePlaybackButton();
@@ -697,7 +884,8 @@ export class SubtitleLabView extends ItemView {
 		}
 	}
 
-	private followTime(currentTime: number): void {
+	private followTime(currentTime: number, force = false): void {
+		if (!this.followPlayback && !force) return;
 		let index = -1;
 		const activeCaptions = this.captionIndicesForVideo(this.activeVideoIndex);
 		for (let position = 0; position < activeCaptions.length; position++) {
@@ -709,7 +897,7 @@ export class SubtitleLabView extends ItemView {
 				break;
 			}
 		}
-		if (index >= 0 && index !== this.currentIndex) {
+		if (index >= 0 && (index !== this.currentIndex || force)) {
 			this.currentIndex = index;
 			this.updateActiveCaption(true);
 		}

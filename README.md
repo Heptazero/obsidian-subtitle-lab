@@ -6,9 +6,11 @@ An Obsidian plugin for studying Markdown subtitles alongside YouTube, Bilibili, 
 
 - Opens a dedicated subtitle-learning tab with a pinned video player.
 - Recognizes YouTube links, Bilibili BV/AV/bangumi links, direct media URLs, and video files in the vault.
-- Supports multiple videos in one note with a single active player, a video picker, and collapsible subtitle groups.
+- Supports multiple videos in one note with a single active player, a full-note outline navigator, and collapsible subtitle groups.
 - Builds collapsible subtitle outlines from Markdown headings that contain timestamped captions.
 - Keeps the current outline heading pinned above the scrolling captions; the pinned heading remains the section's collapse control.
+- Lets users pause or resume subtitle-following independently of video playback and locate the current caption on demand.
+- Saves a custom toolbar order after a press-and-hold drag.
 - Parses timestamped Markdown subtitles. A blank line or the next timestamp starts a new subtitle block.
 - Follows playback for YouTube and HTML5 media, highlights the active subtitle, and supports previous/next subtitle commands.
 - Uses Bilibili's official external player and its `t` parameter for timestamp jumps.
@@ -85,6 +87,14 @@ https://youtu.be/VIDEO_ID
 ## Key points
 [02:10] A second timestamped section also appears in the outline.
 ```
+
+The outline button opens a compact navigator for every video and timestamped heading in the note. Selecting an item switches videos when needed and seeks to that section's first caption.
+
+### Follow Controls and Commands
+
+The toolbar has separate controls for automatic subtitle following and one-time location. Turning following off leaves the video playing without moving the selected caption or subtitle scroll position. **Locate current caption** synchronizes once without enabling automatic following.
+
+The Obsidian command palette includes commands to enable, disable, or toggle subtitle following; locate the current caption; and open or close the subtitle outline. Toolbar action buttons can be reordered by holding one briefly and dragging it; the order is saved in plugin data.
 
 ## Compatibility
 

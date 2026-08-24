@@ -2,6 +2,7 @@ import { Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
 import { parseSubtitleDocument } from "./parser";
 import { DEFAULT_SETTINGS, SubtitleLabSettingTab } from "./settings";
 import { SUBTITLE_LAB_VIEW, SubtitleLabView } from "./subtitle-view";
+import { normalizeToolbarOrder } from "./toolbar";
 import type { SubtitleBlock, SubtitleLabSettings } from "./types";
 
 export default class SubtitleLabPlugin extends Plugin {
@@ -37,6 +38,31 @@ export default class SubtitleLabPlugin extends Plugin {
 			name: "编辑当前字幕块",
 			callback: () => void this.withView((view) => view.editCurrent()),
 		});
+		this.addCommand({
+			id: "enable-caption-follow",
+			name: "开启字幕跟随视频",
+			callback: () => void this.withView((view) => view.setFollowPlayback(true)),
+		});
+		this.addCommand({
+			id: "disable-caption-follow",
+			name: "关闭字幕跟随视频",
+			callback: () => void this.withView((view) => view.setFollowPlayback(false)),
+		});
+		this.addCommand({
+			id: "toggle-caption-follow",
+			name: "切换字幕跟随视频",
+			callback: () => void this.withView((view) => view.toggleFollowPlayback()),
+		});
+		this.addCommand({
+			id: "locate-current-caption",
+			name: "定位到视频当前字幕",
+			callback: () => void this.withView((view) => view.locateCurrentCaption()),
+		});
+		this.addCommand({
+			id: "toggle-outline-navigator",
+			name: "打开或关闭字幕大纲",
+			callback: () => void this.withView((view) => view.toggleOutlineNavigator()),
+		});
 	}
 
 	onunload(): void {
@@ -44,11 +70,18 @@ export default class SubtitleLabPlugin extends Plugin {
 	}
 
 	async loadSettings(): Promise<void> {
-		const saved = await this.loadData();
+		const saved = (await this.loadData()) as (Partial<SubtitleLabSettings> & { autoScroll?: boolean }) | null;
 		this.settings = {
 			...DEFAULT_SETTINGS,
 			...saved,
 			fields: Array.isArray(saved?.fields) ? saved.fields : DEFAULT_SETTINGS.fields,
+			followPlayback:
+				typeof saved?.followPlayback === "boolean"
+					? saved.followPlayback
+					: typeof saved?.autoScroll === "boolean"
+						? saved.autoScroll
+						: DEFAULT_SETTINGS.followPlayback,
+			toolbarOrder: normalizeToolbarOrder(saved?.toolbarOrder),
 		};
 	}
 

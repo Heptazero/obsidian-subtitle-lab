@@ -1,5 +1,6 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type SubtitleLabPlugin from "./main";
+import { DEFAULT_TOOLBAR_ORDER } from "./toolbar";
 import type { FieldStyle, SubtitleLabSettings } from "./types";
 
 export const DEFAULT_SETTINGS: SubtitleLabSettings = {
@@ -12,7 +13,8 @@ export const DEFAULT_SETTINGS: SubtitleLabSettings = {
 		{ id: "bracketed-meta", name: "标签批注", prefix: "【", textColor: "#7c2d12", backgroundColor: "#ffedd5" },
 		{ id: "culture", name: "梗与背景", prefix: "梗：", textColor: "#6b21a8", backgroundColor: "#f3e8ff" },
 	],
-	autoScroll: true,
+	followPlayback: true,
+	toolbarOrder: [...DEFAULT_TOOLBAR_ORDER],
 };
 
 export class SubtitleLabSettingTab extends PluginSettingTab {
@@ -26,12 +28,13 @@ export class SubtitleLabSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl).setName("字幕分块").setHeading();
 		new Setting(containerEl)
-			.setName("自动居中当前字幕")
-			.setDesc("YouTube、本地视频或直链视频推进时，将对应字幕块滚动到视图中央。")
+			.setName("默认跟随视频")
+			.setDesc("打开学习视图时，字幕根据 YouTube、本地视频或直链视频的播放时间自动推进。")
 			.addToggle((toggle) =>
-				toggle.setValue(this.plugin.settings.autoScroll).onChange(async (value) => {
-					this.plugin.settings.autoScroll = value;
+				toggle.setValue(this.plugin.settings.followPlayback).onChange(async (value) => {
+					this.plugin.settings.followPlayback = value;
 					await this.plugin.saveSettings();
+					this.plugin.refreshAllViews();
 				})
 			);
 

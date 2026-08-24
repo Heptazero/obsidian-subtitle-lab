@@ -1,4 +1,4 @@
-import type { SubtitleBlock, SubtitleDocument, SubtitleVideo, VideoSource } from "./types";
+import type { SubtitleBlock, SubtitleDocument, SubtitleHeading, SubtitleVideo, VideoSource } from "./types";
 
 const TIMESTAMP = /^\s*\[(?:(\d{1,2}):)?(\d{1,2}):(\d{2})\]\s*(.*)$/;
 
@@ -21,6 +21,7 @@ export function parseSubtitleDocument(content: string): SubtitleDocument {
 		captions.push({
 			id: `${startOffset}:${timestamp}`,
 			videoIndex: null,
+			outline: [],
 			timestamp,
 			startSeconds,
 			original,
@@ -70,8 +71,65 @@ export function parseSubtitleDocument(content: string): SubtitleDocument {
 		const precedingIndex = findPrecedingVideoIndex(videos, caption.startOffset);
 		caption.videoIndex = precedingIndex >= 0 ? precedingIndex : videos.length === 1 ? 0 : null;
 	}
+	assignCaptionOutlines(content, captions, videos);
 
 	return { captions, videos };
+}
+
+function assignCaptionOutlines(content: string, captions: SubtitleBlock[], videos: SubtitleVideo[]): void {
+	const headings = findDocumentHeadings(content);
+	for (let videoIndex = 0; videoIndex < videos.length; videoIndex++) {
+		const groupCaptions = captions.filter((caption) => caption.videoIndex === videoIndex);
+		const groupEnd = videos[videoIndex + 1]?.startOffset ?? content.length;
+		const groupHeadings = headings.filter(
+			(heading) => heading.startOffset > videos[videoIndex].startOffset && heading.startOffset < groupEnd
+		);
+		applyHeadingPaths(groupCaptions, groupHeadings);
+	}
+
+	const unassigned = captions.filter((caption) => caption.videoIndex === null);
+	if (unassigned.length > 0) {
+		const firstVideoOffset = videos[0]?.startOffset ?? content.length;
+		applyHeadingPaths(
+			unassigned,
+			headings.filter((heading) => heading.startOffset < firstVideoOffset)
+		);
+	}
+}
+
+function applyHeadingPaths(captions: SubtitleBlock[], headings: SubtitleHeading[]): void {
+	const stack: SubtitleHeading[] = [];
+	let headingIndex = 0;
+	for (const caption of captions) {
+		while (headingIndex < headings.length && headings[headingIndex].startOffset < caption.startOffset) {
+			const heading = headings[headingIndex++];
+			while (stack.length > 0 && stack[stack.length - 1].level >= heading.level) stack.pop();
+			stack.push(heading);
+		}
+		caption.outline = [...stack];
+	}
+}
+
+function findDocumentHeadings(content: string): SubtitleHeading[] {
+	const headings: SubtitleHeading[] = [];
+	let offset = 0;
+	const lines = content.split(/\r?\n/);
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index];
+		const match = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+		if (match) {
+			headings.push({
+				id: `heading-${offset}`,
+				level: match[1].length,
+				title: stripMarkdown(match[2]),
+				startOffset: offset,
+			});
+		}
+		if (index < lines.length - 1) {
+			offset += line.length + (content.startsWith("\r\n", offset + line.length) ? 2 : 1);
+		}
+	}
+	return headings;
 }
 
 export function findYouTubeId(content: string): string | null {

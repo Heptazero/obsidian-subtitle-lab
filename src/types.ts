@@ -1,6 +1,7 @@
 export interface SubtitleBlock {
 	id: string;
 	videoIndex: number | null;
+	outline: SubtitleHeading[];
 	timestamp: string;
 	startSeconds: number;
 	original: string;
@@ -8,6 +9,13 @@ export interface SubtitleBlock {
 	raw: string;
 	startOffset: number;
 	endOffset: number;
+}
+
+export interface SubtitleHeading {
+	id: string;
+	level: number;
+	title: string;
+	startOffset: number;
 }
 
 export interface SubtitleDocument {

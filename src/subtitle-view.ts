@@ -1,9 +1,15 @@
 import { ItemView, MarkdownRenderer, Notice, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import { parseSubtitleDocument, videoSourceKey } from "./parser";
 import type SubtitleLabPlugin from "./main";
-import type { FieldStyle, SubtitleBlock, SubtitleVideo, VideoSource } from "./types";
+import type { FieldStyle, SubtitleBlock, SubtitleHeading, SubtitleVideo, VideoSource } from "./types";
 
 export const SUBTITLE_LAB_VIEW = "subtitle-lab-view";
+
+interface CaptionOutlineNode {
+	heading: SubtitleHeading | null;
+	captionIndices: number[];
+	children: CaptionOutlineNode[];
+}
 
 export class SubtitleLabView extends ItemView {
 	private file: TFile | null = null;
@@ -22,6 +28,7 @@ export class SubtitleLabView extends ItemView {
 	private captionsEl: HTMLElement | null = null;
 	private captionEls = new Map<number, HTMLElement>();
 	private videoGroupEls = new Map<number, HTMLDetailsElement>();
+	private outlineOpenState = new Map<string, boolean>();
 	private playerPoll: number | null = null;
 
 	constructor(leaf: WorkspaceLeaf, private plugin: SubtitleLabPlugin) {
@@ -213,7 +220,11 @@ export class SubtitleLabView extends ItemView {
 		}
 
 		if (this.videos.length <= 1) {
-			this.captions.forEach((caption, index) => this.renderCaption(captionsEl, caption, index));
+			this.renderCaptionOutline(
+				captionsEl,
+				this.captions.map((_, index) => index),
+				this.activeVideoIndex
+			);
 		} else {
 			this.renderCaptionGroups(captionsEl);
 		}
@@ -274,7 +285,7 @@ export class SubtitleLabView extends ItemView {
 
 		const body = details.createDiv({ cls: "subtitle-lab-video-group-body" });
 		if (indices.length === 0) body.createDiv({ text: "该视频下没有时间戳字幕。", cls: "subtitle-lab-empty is-compact" });
-		else indices.forEach((captionIndex) => this.renderCaption(body, this.captions[captionIndex], captionIndex));
+		else this.renderCaptionOutline(body, indices, videoIndex);
 	}
 
 	private captionIndicesForVideo(videoIndex: number | null): number[] {
@@ -283,6 +294,58 @@ export class SubtitleLabView extends ItemView {
 			if (caption.videoIndex === videoIndex) indices.push(index);
 		});
 		return indices;
+	}
+
+	private renderCaptionOutline(parent: HTMLElement, indices: number[], videoIndex: number): void {
+		const root = this.buildCaptionOutline(indices);
+		if (root.captionIndices.length === 0 && root.children.length === 1) {
+			// A lone container such as "字幕" adds no useful folding level.
+			this.renderOutlineContents(parent, root.children[0], videoIndex);
+			return;
+		}
+		this.renderOutlineContents(parent, root, videoIndex);
+	}
+
+	private buildCaptionOutline(indices: number[]): CaptionOutlineNode {
+		const root: CaptionOutlineNode = { heading: null, captionIndices: [], children: [] };
+		for (const captionIndex of indices) {
+			const caption = this.captions[captionIndex];
+			let node = root;
+			for (const heading of caption.outline) {
+				let child = node.children.find((candidate) => candidate.heading?.id === heading.id);
+				if (!child) {
+					child = { heading, captionIndices: [], children: [] };
+					node.children.push(child);
+				}
+				node = child;
+			}
+			node.captionIndices.push(captionIndex);
+		}
+		return root;
+	}
+
+	private renderOutlineContents(parent: HTMLElement, node: CaptionOutlineNode, videoIndex: number): void {
+		node.captionIndices.forEach((captionIndex) => this.renderCaption(parent, this.captions[captionIndex], captionIndex));
+		node.children.forEach((child) => this.renderOutlineSection(parent, child, videoIndex));
+	}
+
+	private renderOutlineSection(parent: HTMLElement, node: CaptionOutlineNode, videoIndex: number): void {
+		const heading = node.heading;
+		if (!heading) return;
+		const details = parent.createEl("details", { cls: "subtitle-lab-outline-section" });
+		const stateKey = `${this.file?.path ?? ""}:${videoIndex}:${heading.id}`;
+		details.open = this.outlineOpenState.get(stateKey) ?? true;
+		details.addEventListener("toggle", () => this.outlineOpenState.set(stateKey, details.open));
+
+		const summary = details.createEl("summary", { cls: "subtitle-lab-outline-summary" });
+		summary.createSpan({ text: heading.title, cls: "subtitle-lab-outline-title" });
+		summary.createSpan({ text: `${this.countOutlineCaptions(node)} 句`, cls: "subtitle-lab-outline-count" });
+		const body = details.createDiv({ cls: "subtitle-lab-outline-body" });
+		this.renderOutlineContents(body, node, videoIndex);
+	}
+
+	private countOutlineCaptions(node: CaptionOutlineNode): number {
+		return node.captionIndices.length + node.children.reduce((total, child) => total + this.countOutlineCaptions(child), 0);
 	}
 
 	private switchVideo(videoIndex: number, startSeconds = 0, autoplay = false): void {
@@ -565,6 +628,13 @@ export class SubtitleLabView extends ItemView {
 	private updateActiveCaption(shouldScroll: boolean): void {
 		for (const [index, card] of this.captionEls) card.toggleClass("is-active", index === this.currentIndex);
 		const active = this.captionEls.get(this.currentIndex);
+		if (active) {
+			let section = active.parentElement?.closest<HTMLDetailsElement>("details");
+			while (section && this.captionsEl?.contains(section)) {
+				section.open = true;
+				section = section.parentElement?.closest<HTMLDetailsElement>("details");
+			}
+		}
 		if (active && shouldScroll && this.plugin.settings.autoScroll) {
 			active.scrollIntoView({ behavior: "smooth", block: "center" });
 		}

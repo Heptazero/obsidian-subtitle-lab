@@ -65,9 +65,15 @@ export default class SubtitleLabPlugin extends Plugin {
 	async replaceCaptionBlock(file: TFile, expected: SubtitleBlock, nextRaw: string): Promise<boolean> {
 		let replaced = false;
 		await this.app.vault.process(file, (content) => {
-			const live = parseSubtitleDocument(content).captions.find(
-				(caption) => caption.startSeconds === expected.startSeconds && caption.raw === expected.raw
-			);
+			const captions = parseSubtitleDocument(content).captions;
+			const live =
+				captions.find((caption) => caption.startOffset === expected.startOffset && caption.raw === expected.raw) ??
+				captions.find(
+					(caption) =>
+						caption.videoIndex === expected.videoIndex &&
+						caption.startSeconds === expected.startSeconds &&
+						caption.raw === expected.raw
+				);
 			if (!live) return content;
 			replaced = true;
 			return `${content.slice(0, live.startOffset)}${nextRaw}${content.slice(live.endOffset)}`;

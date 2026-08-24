@@ -1,4 +1,4 @@
-import type { SubtitleBlock, SubtitleDocument, VideoSource } from "./types";
+import type { SubtitleBlock, SubtitleDocument, SubtitleVideo, VideoSource } from "./types";
 
 const TIMESTAMP = /^\s*\[(?:(\d{1,2}):)?(\d{1,2}):(\d{2})\]\s*(.*)$/;
 
@@ -20,6 +20,7 @@ export function parseSubtitleDocument(content: string): SubtitleDocument {
 		const annotationLines = lines.slice(firstLineIndex + 1);
 		captions.push({
 			id: `${startOffset}:${timestamp}`,
+			videoIndex: null,
 			timestamp,
 			startSeconds,
 			original,
@@ -45,6 +46,8 @@ export function parseSubtitleDocument(content: string): SubtitleDocument {
 		const line = lines[index];
 		const lineStart = offset;
 		const isTimestamp = TIMESTAMP.test(line);
+		const isHeading = /^\s{0,3}#{1,6}\s+/.test(line);
+		const isVideo = findVideoSource(line) !== null;
 
 		if (isTimestamp) {
 			// A new timestamp is always a new subtitle, even without a blank line.
@@ -52,7 +55,7 @@ export function parseSubtitleDocument(content: string): SubtitleDocument {
 			blockStart = lineStart;
 			blockEnd = lineStart + line.length;
 		} else if (blockStart >= 0) {
-			if (line.trim().length === 0) finishBlock();
+			if (line.trim().length === 0 || isHeading || isVideo) finishBlock();
 			else blockEnd = lineStart + line.length;
 		}
 
@@ -62,7 +65,13 @@ export function parseSubtitleDocument(content: string): SubtitleDocument {
 	}
 	finishBlock();
 
-	return { captions, video: findVideoSource(content) };
+	const videos = findVideoSources(content);
+	for (const caption of captions) {
+		const precedingIndex = findPrecedingVideoIndex(videos, caption.startOffset);
+		caption.videoIndex = precedingIndex >= 0 ? precedingIndex : videos.length === 1 ? 0 : null;
+	}
+
+	return { captions, videos };
 }
 
 export function findYouTubeId(content: string): string | null {
@@ -94,6 +103,54 @@ export function findVideoSource(content: string): VideoSource | null {
 	}
 
 	return null;
+}
+
+export function findVideoSources(content: string): SubtitleVideo[] {
+	const videos: SubtitleVideo[] = [];
+	let offset = 0;
+	let currentHeading = "";
+	const lines = content.split(/\r?\n/);
+
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index];
+		const heading = line.match(/^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/);
+		if (heading) currentHeading = stripMarkdown(heading[1]);
+
+		const source = findVideoSource(line);
+		if (source) {
+			const title = currentHeading || findLinkLabel(line) || `视频 ${videos.length + 1}`;
+			videos.push({
+				id: `video-${videos.length}:${videoSourceKey(source)}`,
+				title,
+				source,
+				startOffset: offset,
+			});
+		}
+
+		if (index < lines.length - 1) {
+			offset += line.length + (content.startsWith("\r\n", offset + line.length) ? 2 : 1);
+		}
+	}
+
+	return videos;
+}
+
+function findPrecedingVideoIndex(videos: SubtitleVideo[], captionOffset: number): number {
+	let result = -1;
+	for (let index = 0; index < videos.length; index++) {
+		if (videos[index].startOffset >= captionOffset) break;
+		result = index;
+	}
+	return result;
+}
+
+function findLinkLabel(line: string): string {
+	const label = line.match(/!?\[([^\]]+)\]\(/)?.[1] ?? line.match(/!\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/)?.[1] ?? "";
+	return stripMarkdown(label);
+}
+
+function stripMarkdown(value: string): string {
+	return value.replace(/[*_`~]/g, "").trim();
 }
 
 function findBilibiliSource(content: string): VideoSource | null {

@@ -1,22 +1,27 @@
 import { ItemView, MarkdownRenderer, Notice, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import { parseSubtitleDocument, videoSourceKey } from "./parser";
 import type SubtitleLabPlugin from "./main";
-import type { FieldStyle, SubtitleBlock, VideoSource } from "./types";
+import type { FieldStyle, SubtitleBlock, SubtitleVideo, VideoSource } from "./types";
 
 export const SUBTITLE_LAB_VIEW = "subtitle-lab-view";
 
 export class SubtitleLabView extends ItemView {
 	private file: TFile | null = null;
 	private captions: SubtitleBlock[] = [];
+	private videos: SubtitleVideo[] = [];
+	private activeVideoIndex = -1;
 	private currentIndex = -1;
 	private editingIndex = -1;
 	private iframePlayer: HTMLIFrameElement | null = null;
 	private mediaPlayer: HTMLMediaElement | null = null;
 	private playerReady = false;
 	private isPlaying = false;
-	private videoSource: VideoSource | null = null;
+	private playerHostEl: HTMLElement | null = null;
+	private videoSelectEl: HTMLSelectElement | null = null;
+	private sourceLabelEl: HTMLElement | null = null;
 	private captionsEl: HTMLElement | null = null;
 	private captionEls = new Map<number, HTMLElement>();
+	private videoGroupEls = new Map<number, HTMLDetailsElement>();
 	private playerPoll: number | null = null;
 
 	constructor(leaf: WorkspaceLeaf, private plugin: SubtitleLabPlugin) {
@@ -55,19 +60,42 @@ export class SubtitleLabView extends ItemView {
 		this.file = file;
 		this.currentIndex = -1;
 		this.editingIndex = -1;
+		if (isNewFile) this.activeVideoIndex = -1;
 		await this.loadFile(file, isNewFile);
 	}
 
 	async loadFile(file: TFile, rebuildShell = false): Promise<void> {
 		if (file.extension !== "md") return;
-		const previousVideoKey = videoSourceKey(this.videoSource);
+		const previousVideoKey = this.activeVideoKey();
+		const previousVideoStructure = this.videoStructureKey();
 		this.file = file;
 		const parsed = parseSubtitleDocument(await this.app.vault.read(file));
 		this.captions = parsed.captions;
-		this.videoSource = parsed.video;
+		this.videos = parsed.videos;
+		if (this.videos.length === 0) this.activeVideoIndex = -1;
+		else if (this.activeVideoIndex < 0 || this.activeVideoIndex >= this.videos.length) this.activeVideoIndex = 0;
 		if (this.currentIndex >= this.captions.length) this.currentIndex = this.captions.length - 1;
-		if (rebuildShell || previousVideoKey !== videoSourceKey(this.videoSource) || !this.captionsEl) this.render();
+		if (
+			rebuildShell ||
+			previousVideoKey !== this.activeVideoKey() ||
+			previousVideoStructure !== this.videoStructureKey() ||
+			!this.captionsEl
+		)
+			this.render();
 		else this.renderCaptions();
+	}
+
+	private activeVideo(): SubtitleVideo | null {
+		return this.videos[this.activeVideoIndex] ?? null;
+	}
+
+	private activeVideoKey(): string {
+		const video = this.activeVideo();
+		return video ? `${this.activeVideoIndex}:${videoSourceKey(video.source)}` : "none";
+	}
+
+	private videoStructureKey(): string {
+		return this.videos.map((video) => `${video.title}:${videoSourceKey(video.source)}`).join("\n");
 	}
 
 	refresh(): void {
@@ -77,12 +105,18 @@ export class SubtitleLabView extends ItemView {
 
 	goRelative(direction: 1 | -1): void {
 		if (this.captions.length === 0) return;
-		const from = this.currentIndex < 0 ? 0 : this.currentIndex;
-		this.goTo(Math.max(0, Math.min(this.captions.length - 1, from + direction)), true);
+		if (this.currentIndex < 0) {
+			const activeCaptions = this.captionIndicesForVideo(this.activeVideoIndex);
+			const initial = direction > 0 ? activeCaptions[0] : activeCaptions[activeCaptions.length - 1];
+			if (initial !== undefined) this.goTo(initial, true);
+			return;
+		}
+		this.goTo(Math.max(0, Math.min(this.captions.length - 1, this.currentIndex + direction)), true);
 	}
 
 	togglePlayback(): void {
-		if (this.videoSource?.kind === "bilibili") {
+		const source = this.activeVideo()?.source;
+		if (source?.kind === "bilibili") {
 			new Notice("哔哩哔哩外链播放器需使用视频内的播放按钮。");
 			return;
 		}
@@ -91,7 +125,7 @@ export class SubtitleLabView extends ItemView {
 			else this.mediaPlayer.pause();
 			return;
 		}
-		if (this.videoSource?.kind === "youtube") {
+		if (source?.kind === "youtube") {
 			this.isPlaying = !this.isPlaying;
 			this.sendYouTubeCommand(this.isPlaying ? "playVideo" : "pauseVideo");
 			this.updatePlaybackButton();
@@ -99,12 +133,14 @@ export class SubtitleLabView extends ItemView {
 	}
 
 	editCurrent(): void {
-		if (this.currentIndex < 0 && this.captions.length > 0) this.currentIndex = 0;
+		if (this.currentIndex < 0) this.currentIndex = this.captionIndicesForVideo(this.activeVideoIndex)[0] ?? -1;
 		if (this.currentIndex >= 0) this.startEditing(this.currentIndex);
 	}
 
 	private startEditing(index: number): void {
-		if (!this.captions[index]) return;
+		const caption = this.captions[index];
+		if (!caption) return;
+		if (caption.videoIndex !== null && caption.videoIndex !== this.activeVideoIndex) this.switchVideo(caption.videoIndex);
 		this.currentIndex = index;
 		this.editingIndex = index;
 		this.renderCaptions();
@@ -115,26 +151,32 @@ export class SubtitleLabView extends ItemView {
 		const root = this.contentEl;
 		root.empty();
 		root.addClass("subtitle-lab");
+		this.playerHostEl = null;
+		this.videoSelectEl = null;
+		this.sourceLabelEl = null;
 		this.captionsEl = null;
 		this.iframePlayer = null;
 		this.mediaPlayer = null;
 		this.playerReady = false;
 		this.isPlaying = false;
 		this.captionEls.clear();
+		this.videoGroupEls.clear();
 
 		const toolbar = root.createDiv({ cls: "subtitle-lab-toolbar" });
 		const title = toolbar.createDiv({ cls: "subtitle-lab-title" });
 		title.createSpan({ text: this.file?.basename ?? "选择一个字幕 Markdown", cls: "subtitle-lab-file-name" });
 		title.createSpan({ text: this.captions.length ? `${this.captions.length} 句` : "", cls: "subtitle-lab-count" });
-		if (this.videoSource) title.createSpan({ text: this.videoSourceLabel(), cls: "subtitle-lab-source" });
+		this.sourceLabelEl = title.createSpan({ text: this.videoSourceLabel(), cls: "subtitle-lab-source" });
 
 		const controls = toolbar.createDiv({ cls: "subtitle-lab-controls" });
+		if (this.videos.length > 1) this.renderVideoSelect(controls);
 		this.createIconButton(controls, "refresh-cw", "重新读取字幕", () => this.file && void this.loadFile(this.file));
 		this.createIconButton(controls, "chevron-up", "上一句", () => this.goRelative(-1));
 		this.createIconButton(controls, "chevron-down", "下一句", () => this.goRelative(1));
 		const playButton = this.createIconButton(controls, "play", this.playbackTooltip(), () => this.togglePlayback());
 		playButton.addClass("subtitle-lab-play-button");
-		playButton.disabled = !this.videoSource || this.videoSource.kind === "bilibili";
+		const source = this.activeVideo()?.source;
+		playButton.disabled = !source || source.kind === "bilibili";
 		this.createIconButton(controls, "pencil", "编辑当前字幕块", () => this.editCurrent());
 
 		if (!this.file) {
@@ -142,8 +184,8 @@ export class SubtitleLabView extends ItemView {
 			return;
 		}
 
-		if (this.videoSource) this.renderPlayer(root, this.videoSource);
-		else root.createDiv({ text: "没有识别到支持的视频链接。字幕仍可浏览和编辑。", cls: "subtitle-lab-video-hint" });
+		this.playerHostEl = root.createDiv({ cls: "subtitle-lab-player-host" });
+		this.renderActivePlayer();
 
 		// Compatibility class lets reading-mode integrations (for example Lexis)
 		// recognize selections in this custom view as Markdown preview content.
@@ -161,6 +203,7 @@ export class SubtitleLabView extends ItemView {
 		const scrollTop = captionsEl.scrollTop;
 		captionsEl.empty();
 		this.captionEls.clear();
+		this.videoGroupEls.clear();
 		if (this.captions.length === 0) {
 			captionsEl.createDiv({
 				text: "未找到字幕块。每条字幕需以 [00:00] 开头；空行或下一条时间戳都会结束当前字幕。",
@@ -169,7 +212,11 @@ export class SubtitleLabView extends ItemView {
 			return;
 		}
 
-		this.captions.forEach((caption, index) => this.renderCaption(captionsEl, caption, index));
+		if (this.videos.length <= 1) {
+			this.captions.forEach((caption, index) => this.renderCaption(captionsEl, caption, index));
+		} else {
+			this.renderCaptionGroups(captionsEl);
+		}
 		this.updateActiveCaption(false);
 		captionsEl.scrollTop = scrollTop;
 		window.requestAnimationFrame(() => {
@@ -177,19 +224,120 @@ export class SubtitleLabView extends ItemView {
 		});
 	}
 
-	private renderPlayer(root: HTMLElement, source: VideoSource): void {
+	private renderVideoSelect(parent: HTMLElement): void {
+		this.videoSelectEl = parent.createEl("select", { cls: "dropdown subtitle-lab-video-select" });
+		this.videoSelectEl.setAttribute("aria-label", "选择视频");
+		this.videos.forEach((video, index) => {
+			this.videoSelectEl!.createEl("option", { text: `${index + 1}. ${video.title}`, value: String(index) });
+		});
+		this.videoSelectEl.value = String(this.activeVideoIndex);
+		this.videoSelectEl.addEventListener("change", () => {
+			const index = Number(this.videoSelectEl?.value);
+			if (!Number.isInteger(index)) return;
+			this.switchVideo(index);
+			const group = this.videoGroupEls.get(index);
+			if (group) {
+				group.open = true;
+				group.scrollIntoView({ behavior: "smooth", block: "nearest" });
+			}
+		});
+	}
+
+	private renderCaptionGroups(parent: HTMLElement): void {
+		this.videos.forEach((video, videoIndex) => {
+			const indices = this.captionIndicesForVideo(videoIndex);
+			this.renderCaptionGroup(parent, videoIndex, video.title, indices);
+		});
+
+		const unassigned = this.captionIndicesForVideo(null);
+		if (unassigned.length > 0) this.renderCaptionGroup(parent, -1, "未关联视频", unassigned);
+	}
+
+	private renderCaptionGroup(parent: HTMLElement, videoIndex: number, title: string, indices: number[]): void {
+		const details = parent.createEl("details", { cls: "subtitle-lab-video-group" });
+		details.open = videoIndex === this.activeVideoIndex;
+		details.toggleClass("is-active", videoIndex === this.activeVideoIndex);
+		this.videoGroupEls.set(videoIndex, details);
+
+		const summary = details.createEl("summary", { cls: "subtitle-lab-video-group-summary" });
+		summary.createSpan({ text: title, cls: "subtitle-lab-video-group-title" });
+		summary.createSpan({ text: `${indices.length} 句`, cls: "subtitle-lab-video-group-count" });
+		if (videoIndex >= 0) {
+			summary.addEventListener("click", (event) => {
+				if (videoIndex !== this.activeVideoIndex) {
+					event.preventDefault();
+					this.switchVideo(videoIndex);
+					details.open = true;
+				}
+			});
+		}
+
+		const body = details.createDiv({ cls: "subtitle-lab-video-group-body" });
+		if (indices.length === 0) body.createDiv({ text: "该视频下没有时间戳字幕。", cls: "subtitle-lab-empty is-compact" });
+		else indices.forEach((captionIndex) => this.renderCaption(body, this.captions[captionIndex], captionIndex));
+	}
+
+	private captionIndicesForVideo(videoIndex: number | null): number[] {
+		const indices: number[] = [];
+		this.captions.forEach((caption, index) => {
+			if (caption.videoIndex === videoIndex) indices.push(index);
+		});
+		return indices;
+	}
+
+	private switchVideo(videoIndex: number, startSeconds = 0, autoplay = false): void {
+		if (!this.videos[videoIndex]) return;
+		const changed = videoIndex !== this.activeVideoIndex;
+		this.activeVideoIndex = videoIndex;
+		if (changed) {
+			this.currentIndex = -1;
+			this.updateActiveCaption(false);
+		}
+		this.renderActivePlayer(startSeconds, autoplay);
+		this.updateVideoControls();
+		const group = this.videoGroupEls.get(videoIndex);
+		if (group) group.open = true;
+	}
+
+	private renderActivePlayer(startSeconds = 0, autoplay = false): void {
+		const host = this.playerHostEl;
+		if (!host) return;
+		this.mediaPlayer?.pause();
+		host.empty();
+		this.iframePlayer = null;
+		this.mediaPlayer = null;
+		this.playerReady = false;
+		this.isPlaying = false;
+
+		const video = this.activeVideo();
+		if (video) this.renderPlayer(host, video.source, startSeconds, autoplay);
+		else host.createDiv({ text: "没有识别到支持的视频链接。字幕仍可浏览和编辑。", cls: "subtitle-lab-video-hint" });
+		this.updatePlaybackButton();
+	}
+
+	private updateVideoControls(): void {
+		if (this.videoSelectEl) this.videoSelectEl.value = String(this.activeVideoIndex);
+		if (this.sourceLabelEl) this.sourceLabelEl.setText(this.videoSourceLabel());
+		for (const [videoIndex, group] of this.videoGroupEls) group.toggleClass("is-active", videoIndex === this.activeVideoIndex);
+		const playButton = this.contentEl.querySelector<HTMLButtonElement>(".subtitle-lab-play-button");
+		const source = this.activeVideo()?.source;
+		if (playButton) playButton.disabled = !source || source.kind === "bilibili";
+		this.updatePlaybackButton();
+	}
+
+	private renderPlayer(root: HTMLElement, source: VideoSource, startSeconds = 0, autoplay = false): void {
 		const playerWrap = root.createDiv({ cls: "subtitle-lab-player-wrap" });
 		if (source.kind === "youtube") {
-			this.renderYouTubePlayer(playerWrap, source.id);
+			this.renderYouTubePlayer(playerWrap, source.id, startSeconds, autoplay);
 			return;
 		}
 		if (source.kind === "bilibili") {
-			this.renderBilibiliPlayer(playerWrap, source, 0, false);
+			this.renderBilibiliPlayer(playerWrap, source, startSeconds, autoplay);
 			return;
 		}
 
 		if (source.kind === "direct") {
-			this.renderHtmlMediaPlayer(playerWrap, source.url);
+			this.renderHtmlMediaPlayer(playerWrap, source.url, startSeconds, autoplay);
 			return;
 		}
 
@@ -199,15 +347,22 @@ export class SubtitleLabView extends ItemView {
 			root.createDiv({ text: `找不到 vault 媒体文件：${source.path}`, cls: "subtitle-lab-video-hint" });
 			return;
 		}
-		this.renderHtmlMediaPlayer(playerWrap, mediaUrl);
+		this.renderHtmlMediaPlayer(playerWrap, mediaUrl, startSeconds, autoplay);
 	}
 
-	private renderYouTubePlayer(playerWrap: HTMLElement, youtubeId: string): void {
+	private renderYouTubePlayer(playerWrap: HTMLElement, youtubeId: string, startSeconds: number, autoplay: boolean): void {
+		const params = new URLSearchParams({
+			enablejsapi: "1",
+			playsinline: "1",
+			rel: "0",
+			start: String(Math.max(0, Math.floor(startSeconds))),
+			autoplay: autoplay ? "1" : "0",
+		});
 		this.iframePlayer = playerWrap.createEl("iframe", {
 			cls: "subtitle-lab-player",
 			attr: {
 				id: "subtitle-lab-youtube-player",
-				src: `https://www.youtube.com/embed/${youtubeId}?enablejsapi=1&playsinline=1&rel=0`,
+				src: `https://www.youtube.com/embed/${youtubeId}?${params.toString()}`,
 				title: "YouTube 视频",
 				allow: "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share",
 				allowfullscreen: "true",
@@ -248,7 +403,7 @@ export class SubtitleLabView extends ItemView {
 		this.playerReady = false;
 	}
 
-	private renderHtmlMediaPlayer(playerWrap: HTMLElement, mediaUrl: string): void {
+	private renderHtmlMediaPlayer(playerWrap: HTMLElement, mediaUrl: string, startSeconds: number, autoplay: boolean): void {
 		const media = playerWrap.createEl("video", {
 			cls: "subtitle-lab-player",
 			attr: { src: mediaUrl, controls: "true", preload: "metadata", playsinline: "true" },
@@ -257,6 +412,8 @@ export class SubtitleLabView extends ItemView {
 		this.playerReady = media.readyState >= HTMLMediaElement.HAVE_METADATA;
 		media.addEventListener("loadedmetadata", () => {
 			this.playerReady = true;
+			if (startSeconds > 0) media.currentTime = startSeconds;
+			if (autoplay) void media.play();
 		});
 		media.addEventListener("timeupdate", () => this.followTime(media.currentTime));
 		media.addEventListener("seeked", () => this.followTime(media.currentTime));
@@ -276,13 +433,15 @@ export class SubtitleLabView extends ItemView {
 	}
 
 	private playbackTooltip(): string {
-		return this.videoSource?.kind === "bilibili" ? "请使用哔哩哔哩播放器控件" : "播放或暂停";
+		return this.activeVideo()?.source.kind === "bilibili" ? "请使用哔哩哔哩播放器控件" : "播放或暂停";
 	}
 
 	private videoSourceLabel(): string {
-		if (this.videoSource?.kind === "youtube") return "YouTube";
-		if (this.videoSource?.kind === "bilibili") return "哔哩哔哩·时间戳定位";
-		if (this.videoSource?.kind === "vault") return "本地视频·完整同步";
+		const source = this.activeVideo()?.source;
+		if (!source) return "";
+		if (source.kind === "youtube") return "YouTube";
+		if (source.kind === "bilibili") return "哔哩哔哩·时间戳定位";
+		if (source.kind === "vault") return "本地视频·完整同步";
 		return "直链视频·完整同步";
 	}
 
@@ -333,6 +492,8 @@ export class SubtitleLabView extends ItemView {
 	private async saveEdit(index: number, nextRaw: string): Promise<void> {
 		const caption = this.captions[index];
 		if (!caption || !this.file) return;
+		const originalOffset = caption.startOffset;
+		const originalVideoIndex = caption.videoIndex;
 		const candidate = parseSubtitleDocument(nextRaw).captions[0];
 		if (!candidate || candidate.startOffset !== 0) {
 			new Notice("字幕块第一行必须保留 [00:00] 时间戳。");
@@ -346,7 +507,10 @@ export class SubtitleLabView extends ItemView {
 		}
 		this.editingIndex = -1;
 		await this.loadFile(this.file);
-		this.goTo(this.findCaptionByTime(candidate.startSeconds), false);
+		const refreshedIndex = this.captions.findIndex(
+			(item) => item.startOffset === originalOffset && item.videoIndex === originalVideoIndex
+		);
+		this.goTo(refreshedIndex >= 0 ? refreshedIndex : this.findCaptionByTime(candidate.startSeconds), false);
 	}
 
 	private findField(line: string): FieldStyle | undefined {
@@ -371,11 +535,16 @@ export class SubtitleLabView extends ItemView {
 	}
 
 	private goTo(index: number, seek: boolean): void {
-		if (!this.captions[index]) return;
-		this.currentIndex = index;
+		const caption = this.captions[index];
+		if (!caption) return;
 		if (seek) {
-			this.seekTo(this.captions[index].startSeconds);
+			if (caption.videoIndex !== null && caption.videoIndex !== this.activeVideoIndex) {
+				this.switchVideo(caption.videoIndex, caption.startSeconds, true);
+			} else {
+				this.seekTo(caption.startSeconds);
+			}
 		}
+		this.currentIndex = index;
 		this.updateActiveCaption(true);
 	}
 
@@ -384,14 +553,13 @@ export class SubtitleLabView extends ItemView {
 			this.mediaPlayer.currentTime = seconds;
 			return;
 		}
-		if (this.videoSource?.kind === "youtube") {
+		const source = this.activeVideo()?.source;
+		if (source?.kind === "youtube") {
 			this.sendYouTubeCommand("seekTo", [seconds, true]);
 			window.setTimeout(() => this.requestPlayerTime(), 200);
 			return;
 		}
-		if (this.videoSource?.kind === "bilibili" && this.iframePlayer?.parentElement) {
-			this.renderBilibiliPlayer(this.iframePlayer.parentElement, this.videoSource, seconds, true);
-		}
+		if (source?.kind === "bilibili") this.renderActivePlayer(seconds, true);
 	}
 
 	private updateActiveCaption(shouldScroll: boolean): void {
@@ -403,7 +571,9 @@ export class SubtitleLabView extends ItemView {
 	}
 
 	private findCaptionByTime(time: number): number {
-		return this.captions.findIndex((caption) => caption.startSeconds === time);
+		return this.captions.findIndex(
+			(caption) => caption.videoIndex === this.activeVideoIndex && caption.startSeconds === time
+		);
 	}
 
 	private requestPlayerTime(): void {
@@ -411,7 +581,7 @@ export class SubtitleLabView extends ItemView {
 			this.followTime(this.mediaPlayer.currentTime);
 			return;
 		}
-		if (this.playerReady && this.videoSource?.kind === "youtube") this.sendYouTubeCommand("getCurrentTime");
+		if (this.playerReady && this.activeVideo()?.source.kind === "youtube") this.sendYouTubeCommand("getCurrentTime");
 	}
 
 	private initializeYouTubeCommunication(): void {
@@ -429,7 +599,7 @@ export class SubtitleLabView extends ItemView {
 	}
 
 	private handlePlayerMessage(event: MessageEvent): void {
-		if (this.videoSource?.kind !== "youtube") return;
+		if (this.activeVideo()?.source.kind !== "youtube") return;
 		if (!event.origin.includes("youtube")) return;
 		if (this.iframePlayer && event.source !== this.iframePlayer.contentWindow) return;
 		let data: unknown = event.data;
@@ -458,10 +628,13 @@ export class SubtitleLabView extends ItemView {
 
 	private followTime(currentTime: number): void {
 		let index = -1;
-		for (let i = 0; i < this.captions.length; i++) {
-			const next = this.captions[i + 1];
-			if (this.captions[i].startSeconds <= currentTime && (!next || next.startSeconds > currentTime)) {
-				index = i;
+		const activeCaptions = this.captionIndicesForVideo(this.activeVideoIndex);
+		for (let position = 0; position < activeCaptions.length; position++) {
+			const captionIndex = activeCaptions[position];
+			const nextIndex = activeCaptions[position + 1];
+			const next = nextIndex === undefined ? undefined : this.captions[nextIndex];
+			if (this.captions[captionIndex].startSeconds <= currentTime && (!next || next.startSeconds > currentTime)) {
+				index = captionIndex;
 				break;
 			}
 		}
@@ -476,7 +649,7 @@ export class SubtitleLabView extends ItemView {
 		if (!button) return;
 		button.empty();
 		setIcon(button, this.isPlaying ? "pause" : "play");
-		const tooltip = this.videoSource?.kind === "bilibili" ? "请使用哔哩哔哩播放器控件" : this.isPlaying ? "暂停" : "播放";
+		const tooltip = this.activeVideo()?.source.kind === "bilibili" ? "请使用哔哩哔哩播放器控件" : this.isPlaying ? "暂停" : "播放";
 		button.setAttribute("aria-label", tooltip);
 		button.setAttribute("title", tooltip);
 	}

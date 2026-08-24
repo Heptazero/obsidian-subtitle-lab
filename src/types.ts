@@ -1,5 +1,6 @@
 export interface SubtitleBlock {
 	id: string;
+	videoIndex: number | null;
 	timestamp: string;
 	startSeconds: number;
 	original: string;
@@ -11,7 +12,14 @@ export interface SubtitleBlock {
 
 export interface SubtitleDocument {
 	captions: SubtitleBlock[];
-	video: VideoSource | null;
+	videos: SubtitleVideo[];
+}
+
+export interface SubtitleVideo {
+	id: string;
+	title: string;
+	source: VideoSource;
+	startOffset: number;
 }
 
 export type VideoSource =

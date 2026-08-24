@@ -8,6 +8,7 @@ An Obsidian plugin for studying Markdown subtitles alongside YouTube, Bilibili, 
 - Recognizes YouTube links, Bilibili BV/AV/bangumi links, direct media URLs, and video files in the vault.
 - Supports multiple videos in one note with a single active player, a video picker, and collapsible subtitle groups.
 - Builds collapsible subtitle outlines from Markdown headings that contain timestamped captions.
+- Keeps the current outline heading pinned above the scrolling captions; the pinned heading remains the section's collapse control.
 - Parses timestamped Markdown subtitles. A blank line or the next timestamp starts a new subtitle block.
 - Follows playback for YouTube and HTML5 media, highlights the active subtitle, and supports previous/next subtitle commands.
 - Uses Bilibili's official external player and its `t` parameter for timestamp jumps.

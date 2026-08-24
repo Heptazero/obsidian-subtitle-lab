@@ -300,10 +300,10 @@ export class SubtitleLabView extends ItemView {
 		const root = this.buildCaptionOutline(indices);
 		if (root.captionIndices.length === 0 && root.children.length === 1) {
 			// A lone container such as "字幕" adds no useful folding level.
-			this.renderOutlineContents(parent, root.children[0], videoIndex);
+			this.renderOutlineContents(parent, root.children[0], videoIndex, 0);
 			return;
 		}
-		this.renderOutlineContents(parent, root, videoIndex);
+		this.renderOutlineContents(parent, root, videoIndex, 0);
 	}
 
 	private buildCaptionOutline(indices: number[]): CaptionOutlineNode {
@@ -324,12 +324,12 @@ export class SubtitleLabView extends ItemView {
 		return root;
 	}
 
-	private renderOutlineContents(parent: HTMLElement, node: CaptionOutlineNode, videoIndex: number): void {
+	private renderOutlineContents(parent: HTMLElement, node: CaptionOutlineNode, videoIndex: number, depth: number): void {
 		node.captionIndices.forEach((captionIndex) => this.renderCaption(parent, this.captions[captionIndex], captionIndex));
-		node.children.forEach((child) => this.renderOutlineSection(parent, child, videoIndex));
+		node.children.forEach((child) => this.renderOutlineSection(parent, child, videoIndex, depth));
 	}
 
-	private renderOutlineSection(parent: HTMLElement, node: CaptionOutlineNode, videoIndex: number): void {
+	private renderOutlineSection(parent: HTMLElement, node: CaptionOutlineNode, videoIndex: number, depth: number): void {
 		const heading = node.heading;
 		if (!heading) return;
 		const details = parent.createEl("details", { cls: "subtitle-lab-outline-section" });
@@ -338,10 +338,11 @@ export class SubtitleLabView extends ItemView {
 		details.addEventListener("toggle", () => this.outlineOpenState.set(stateKey, details.open));
 
 		const summary = details.createEl("summary", { cls: "subtitle-lab-outline-summary" });
+		summary.style.setProperty("--subtitle-lab-outline-top", `${depth * 34}px`);
 		summary.createSpan({ text: heading.title, cls: "subtitle-lab-outline-title" });
 		summary.createSpan({ text: `${this.countOutlineCaptions(node)} 句`, cls: "subtitle-lab-outline-count" });
 		const body = details.createDiv({ cls: "subtitle-lab-outline-body" });
-		this.renderOutlineContents(body, node, videoIndex);
+		this.renderOutlineContents(body, node, videoIndex, depth + 1);
 	}
 
 	private countOutlineCaptions(node: CaptionOutlineNode): number {

@@ -116,6 +116,22 @@ npm run build
 
 The production build is committed as `main.js` so manual installation works directly from a release or repository checkout.
 
+## Prepare a note from the command line
+
+An agent can create a plugin-ready note without running Obsidian. Node.js is the only requirement for this command; provide a subtitle file acquired separately from the same video. Supported inputs are SRT, VTT, Bilibili subtitle JSON (`body`), YouTube JSON3 (`events`), `startMs`/`text` JSON cues, and timestamped Markdown. No video or audio is downloaded by this command.
+
+```bash
+npm run prepare-note -- \
+  --video 'https://www.youtube.com/watch?v=Tu8COtr2dEo' \
+  --subtitles /path/to/captions.vtt \
+  --title 'This Setup Helps me LOCK IN' \
+  --output '/path/to/vault/60_english/material/vedio/This Setup Helps me LOCK IN.md'
+```
+
+Use `--stdout` instead of `--output` to preview the Markdown or pipe it to another tool. The output directory must exist. The command refuses to overwrite an existing file; the agent should inspect and edit an existing note explicitly instead of regenerating it. Subtitle fetching and transcription are deliberately separate so the agent can verify that the transcript belongs to the requested video before writing it. The generated note is a starting point for translation or annotations, not an AI-generated interpretation.
+
+The manifest permits installation on mobile starting with 0.5.1. Mobile playback, scrolling, and background audio still require a real-device check. Bilibili's embedded player does not expose live playback time to this plugin, so its captions do not auto-follow on desktop or mobile.
+
 ## License
 
 No license has been selected yet. All rights are reserved by default.

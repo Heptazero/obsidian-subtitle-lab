@@ -1,11 +1,13 @@
 {
   "name": "subtitle-lab",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "An editable, scroll-synced Markdown subtitle study view for Obsidian.",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "prepare-note": "node scripts/prepare.mjs",
+    "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -1,4 +1,4 @@
-import { ItemView, MarkdownRenderer, Notice, TFile, WorkspaceLeaf, setIcon } from "obsidian";
+import { ItemView, MarkdownRenderer, Notice, Platform, TFile, WorkspaceLeaf, setIcon } from "obsidian";
 import { parseSubtitleDocument, videoSourceKey } from "./parser";
 import type SubtitleLabPlugin from "./main";
 import { attachToolbarReorder, type ToolbarAction } from "./toolbar";
@@ -136,6 +136,10 @@ export class SubtitleLabView extends ItemView {
 
 	togglePlayback(): void {
 		const source = this.activeVideo()?.source;
+		if (source?.kind === "youtube" && Platform.isIosApp) {
+			new Notice("请使用视频内的播放按钮。iOS 嵌入暂不能读取播放时间。");
+			return;
+		}
 		if (source?.kind === "bilibili") {
 			new Notice("哔哩哔哩外链播放器需使用视频内的播放按钮。");
 			return;
@@ -153,8 +157,8 @@ export class SubtitleLabView extends ItemView {
 	}
 
 	setFollowPlayback(enabled: boolean): void {
-		if (enabled && this.activeVideo()?.source.kind === "bilibili") {
-			new Notice("哔哩哔哩外链播放器无法读取当前播放时间。自动跟随不可用。");
+		if (enabled && !this.supportsLiveFollow()) {
+			new Notice("当前播放器无法读取播放时间。自动跟随不可用。");
 			return;
 		}
 		this.followPlayback = enabled;
@@ -174,6 +178,10 @@ export class SubtitleLabView extends ItemView {
 			return;
 		}
 		const source = this.activeVideo()?.source;
+		if (source?.kind === "youtube" && Platform.isIosApp) {
+			new Notice("iOS 嵌入暂不能读取播放时间。");
+			return;
+		}
 		if (source?.kind === "youtube") {
 			if (!this.playerReady) {
 				new Notice("播放器尚未就绪。");
@@ -260,6 +268,7 @@ export class SubtitleLabView extends ItemView {
 		// recognize selections in this custom view as Markdown preview content.
 		this.captionsEl = root.createDiv({ cls: "subtitle-lab-captions markdown-preview-view" });
 		this.renderCaptions();
+		this.updateVideoControls();
 	}
 
 	private renderCaptions(): void {
@@ -532,7 +541,8 @@ export class SubtitleLabView extends ItemView {
 		const followSupported = this.supportsLiveFollow();
 		const followButton = this.contentEl.querySelector<HTMLButtonElement>(".subtitle-lab-follow-button");
 		const locateButton = this.contentEl.querySelector<HTMLButtonElement>(".subtitle-lab-locate-button");
-		playButton?.toggleClass("is-unavailable", !this.activeVideo() || this.activeVideo()?.source.kind === "bilibili");
+		playButton?.toggleClass("is-unavailable", !this.activeVideo() || this.activeVideo()?.source.kind === "bilibili" ||
+			this.activeVideo()?.source.kind === "youtube" && Platform.isIosApp);
 		followButton?.toggleClass("is-unavailable", !followSupported);
 		locateButton?.toggleClass("is-unavailable", !followSupported);
 		this.updatePlaybackButton();
@@ -542,7 +552,7 @@ export class SubtitleLabView extends ItemView {
 
 	private supportsLiveFollow(): boolean {
 		const source = this.activeVideo()?.source;
-		return !!source && source.kind !== "bilibili";
+		return !!source && source.kind !== "bilibili" && !(source.kind === "youtube" && Platform.isIosApp);
 	}
 
 	private updateFollowButton(): void {
@@ -579,6 +589,7 @@ export class SubtitleLabView extends ItemView {
 		}
 		if (source.kind === "bilibili") {
 			this.renderBilibiliPlayer(playerWrap, source, startSeconds, autoplay);
+			if (Platform.isIosApp) this.renderBilibiliOpenLink(root, source);
 			return;
 		}
 
@@ -597,6 +608,13 @@ export class SubtitleLabView extends ItemView {
 	}
 
 	private renderYouTubePlayer(playerWrap: HTMLElement, youtubeId: string, startSeconds: number, autoplay: boolean): void {
+		if (Platform.isIosApp) {
+			const embed = playerWrap.createDiv({ cls: "subtitle-lab-managed-embed" });
+			const start = Math.max(0, Math.floor(startSeconds));
+			const url = `https://www.youtube.com/watch?v=${youtubeId}${start ? `&t=${start}s` : ""}`;
+			void MarkdownRenderer.render(this.app, `![](${url})`, embed, this.file?.path ?? "", this);
+			return;
+		}
 		const params = new URLSearchParams({
 			enablejsapi: "1",
 			playsinline: "1",
@@ -649,6 +667,18 @@ export class SubtitleLabView extends ItemView {
 		this.playerReady = false;
 	}
 
+	private renderBilibiliOpenLink(root: HTMLElement, source: Extract<VideoSource, { kind: "bilibili" }>): void {
+		const url = source.idType === "episodeId"
+			? `https://www.bilibili.com/bangumi/play/ep${source.id}`
+			: `https://www.bilibili.com/video/${source.idType === "aid" ? "av" : ""}${source.id}${source.page > 1 ? `?p=${source.page}` : ""}`;
+		const actions = root.createDiv({ cls: "subtitle-lab-player-actions" });
+		const link = actions.createEl("a", { href: url, cls: "subtitle-lab-open-source" });
+		link.setAttribute("target", "_blank");
+		link.setAttribute("rel", "noopener noreferrer");
+		setIcon(link.createSpan(), "external-link");
+		link.createSpan({ text: "在 B 站打开" });
+	}
+
 	private renderHtmlMediaPlayer(playerWrap: HTMLElement, mediaUrl: string, startSeconds: number, autoplay: boolean): void {
 		const media = playerWrap.createEl("video", {
 			cls: "subtitle-lab-player",
@@ -679,13 +709,14 @@ export class SubtitleLabView extends ItemView {
 	}
 
 	private playbackTooltip(): string {
-		return this.activeVideo()?.source.kind === "bilibili" ? "请使用哔哩哔哩播放器控件" : "播放或暂停";
+		return this.activeVideo()?.source.kind === "bilibili" || this.activeVideo()?.source.kind === "youtube" && Platform.isIosApp
+			? "请使用视频内的播放按钮" : "播放或暂停";
 	}
 
 	private videoSourceLabel(): string {
 		const source = this.activeVideo()?.source;
 		if (!source) return "";
-		if (source.kind === "youtube") return "YouTube";
+		if (source.kind === "youtube") return Platform.isIosApp ? "YouTube·手动定位" : "YouTube";
 		if (source.kind === "bilibili") return "哔哩哔哩·时间戳定位";
 		if (source.kind === "vault") return "本地视频·完整同步";
 		return "直链视频·完整同步";
@@ -801,6 +832,10 @@ export class SubtitleLabView extends ItemView {
 		}
 		const source = this.activeVideo()?.source;
 		if (source?.kind === "youtube") {
+			if (Platform.isIosApp) {
+				this.renderActivePlayer(seconds);
+				return;
+			}
 			this.sendYouTubeCommand("seekTo", [seconds, true]);
 			window.setTimeout(() => this.requestPlayerTime(), 200);
 			return;
@@ -908,7 +943,8 @@ export class SubtitleLabView extends ItemView {
 		if (!button) return;
 		button.empty();
 		setIcon(button, this.isPlaying ? "pause" : "play");
-		const tooltip = this.activeVideo()?.source.kind === "bilibili" ? "请使用哔哩哔哩播放器控件" : this.isPlaying ? "暂停" : "播放";
+		const tooltip = this.activeVideo()?.source.kind === "bilibili" || this.activeVideo()?.source.kind === "youtube" && Platform.isIosApp
+			? "请使用视频内的播放按钮" : this.isPlaying ? "暂停" : "播放";
 		button.setAttribute("aria-label", tooltip);
 		button.setAttribute("title", tooltip);
 	}

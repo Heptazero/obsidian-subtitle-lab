@@ -1,6 +1,6 @@
 {
   "name": "subtitle-lab",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "An editable, scroll-synced Markdown subtitle study view for Obsidian.",
   "main": "main.js",
   "scripts": {

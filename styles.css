@@ -169,6 +169,33 @@
 	border: 0;
 }
 
+.subtitle-lab-managed-embed,
+.subtitle-lab-managed-embed > p,
+.subtitle-lab-managed-embed .external-embed,
+.subtitle-lab-managed-embed iframe {
+	width: 100%;
+	height: 100%;
+	margin: 0;
+}
+
+.subtitle-lab-player-actions {
+	display: flex;
+	justify-content: flex-end;
+	margin-top: -8px;
+}
+
+.subtitle-lab-open-source {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font-size: var(--font-smallest);
+}
+
+.subtitle-lab-open-source svg {
+	width: 14px;
+	height: 14px;
+}
+
 .subtitle-lab-captions {
 	flex: 1 1 auto;
 	min-height: 0;

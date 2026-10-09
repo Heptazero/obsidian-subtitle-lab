@@ -130,7 +130,7 @@ npm run prepare-note -- \
 
 Use `--stdout` instead of `--output` to preview the Markdown or pipe it to another tool. The output directory must exist. The command refuses to overwrite an existing file; the agent should inspect and edit an existing note explicitly instead of regenerating it. Subtitle fetching and transcription are deliberately separate so the agent can verify that the transcript belongs to the requested video before writing it. The generated note is a starting point for translation or annotations, not an AI-generated interpretation.
 
-The manifest permits installation on mobile starting with 0.5.1. Mobile playback, scrolling, and background audio still require a real-device check. Bilibili's embedded player does not expose live playback time to this plugin, so its captions do not auto-follow on desktop or mobile.
+The manifest permits installation on mobile starting with 0.5.1. On iOS, YouTube uses Obsidian's own Markdown embed because a plugin-created iframe can fail with YouTube error 153. That embed does not expose playback time to Subtitle Lab, so automatic following and toolbar play/pause are unavailable there; timestamps reload the embed at the selected time. On iOS, Bilibili retains its external-player embed and also offers a link to the original video if the embed cannot play. Bilibili's embedded player does not expose live playback time to this plugin on any platform. Mobile playback, timestamp jumps, and background audio still require a real-device check.
 
 ## License
 
